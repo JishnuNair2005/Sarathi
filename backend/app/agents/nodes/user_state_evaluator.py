@@ -33,6 +33,8 @@ class UserStateEvaluator:
         
         # Classify query type using LLM
         classification_prompt = f"""Classify this user query into one of these categories:
+- action: User wants to perform an action (log trip, report vehicle issue, create goal, etc.)
+  Examples: "I completed a trip", "My brake is making noise", "I want to save for a bike"
 - earnings: Questions about income, trips, high-value zones
 - vehicle: Questions about vehicle health, maintenance
 - financial: Questions about savings, investments, goals
@@ -55,14 +57,16 @@ Respond with just the category name."""
             # Fallback to general if LLM fails
             query_type = 'general'
         
-        if query_type not in ['earnings', 'vehicle', 'financial', 'general']:
+        if query_type not in ['action', 'earnings', 'vehicle', 'financial', 'general']:
             query_type = 'general'
         
         state['query_type'] = query_type
         state['messages'].append(HumanMessage(content=state['query']))
         
         # Determine next step
-        if query_type == 'earnings':
+        if query_type == 'action':
+            state['next_step'] = 'action_executor'
+        elif query_type == 'earnings':
             state['next_step'] = 'earnings_advisor'
         elif query_type == 'vehicle':
             state['next_step'] = 'diagnostic_agent'

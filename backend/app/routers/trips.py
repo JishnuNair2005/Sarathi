@@ -12,6 +12,7 @@ from app.schemas.trip import (
     TripStats, ZoneRecommendation
 )
 from app.services import gemini_service, google_maps_service, whatsapp_service
+import logging
 import aiofiles
 import os
 from app.config import settings
@@ -83,7 +84,17 @@ async def create_trip_from_voice(
     upload_dir = settings.UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
     
-    file_path = os.path.join(upload_dir, f"voice_{current_user.id}_{datetime.now().timestamp()}.wav")
+    # Use content type to infer extension
+    mime = getattr(audio_file, 'content_type', None) or 'audio/wav'
+    ext = 'wav'
+    if 'm4a' in mime:
+        ext = 'm4a'
+    elif 'wav' in mime:
+        ext = 'wav'
+    elif 'mpeg' in mime or 'mp3' in mime:
+        ext = 'mp3'
+
+    file_path = os.path.join(upload_dir, f"voice_{current_user.id}_{datetime.now().timestamp()}.{ext}")
     
     async with aiofiles.open(file_path, 'wb') as f:
         content = await audio_file.read()
@@ -91,10 +102,29 @@ async def create_trip_from_voice(
     
     # Transcribe audio
     try:
+        logger = logging.getLogger(__name__)
+        logger.info("Received voice file: %s size=%d bytes", file_path, len(content) if content else 0)
+
         transcription = await gemini_service.transcribe_audio(content)
+        logger.info("Transcription length=%d: %s", len(transcription) if transcription else 0, (transcription[:200] + '...' if transcription and len(transcription) > 200 else transcription))
+        if not transcription or not transcription.strip():
+            logger.warning("Transcription empty for file: %s", file_path)
+            # Bad request if transcription is empty
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Audio transcription resulted in empty text. Please try again with clearer audio"
+            )
         
         # Extract trip information
         trip_info = await gemini_service.extract_trip_info(transcription)
+        logger.info("Extracted trip_info: %s", str(trip_info))
+        if not trip_info or not isinstance(trip_info, dict):
+            logger.warning("Trip extraction returned unexpected result: %s", str(trip_info))
+            # Bad request - extraction invalid
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to extract trip info from transcription"
+            )
         
         # Create trip
         trip_data = TripCreate(
@@ -142,6 +172,22 @@ async def create_trip_from_voice(
         return new_trip
         
     except Exception as e:
+        # If it's an HTTPException, re-raise to be returned as is
+        from fastapi import HTTPException as FastAPIHTTPException
+        if isinstance(e, FastAPIHTTPException):
+            raise
+        # Log full exception and stack trace
+        logger = logging.getLogger(__name__)
+        logger.exception("Voice processing failed for file %s: %s", file_path, str(e))
+
+        # Attempt to cleanup the uploaded file if present
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info("Removed temporary file: %s", file_path)
+        except Exception:
+            logger.exception("Failed to remove temporary file: %s", file_path)
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Voice processing failed: {str(e)}"

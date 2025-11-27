@@ -2,6 +2,8 @@ import google.generativeai as genai
 from app.config import settings
 from typing import Optional, List, Dict, Any
 import base64
+import logging
+import re
 from PIL import Image
 import io
 
@@ -27,13 +29,18 @@ class GeminiService:
     async def transcribe_audio(self, audio_data: bytes) -> str:
         """Transcribe audio to text using Gemini"""
         try:
+            logger = logging.getLogger(__name__)
+            logger.info("Transcribing audio of size %d", len(audio_data) if audio_data else 0)
             # Gemini supports audio transcription
             response = self.model.generate_content([
                 "Transcribe this audio message. The speaker is a ride-hailing or delivery driver reporting their trip details. Extract: start location, end location, earnings, expenses, and any other relevant trip information.",
                 {"mime_type": "audio/wav", "data": audio_data}
             ])
+            logger.info("Transcription response received. Length=%d", len(response.text) if response and response.text else 0)
             return response.text
         except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Audio transcription failed: %s", str(e))
             raise Exception(f"Audio transcription failed: {str(e)}")
     
     async def analyze_vehicle_images(
@@ -138,11 +145,48 @@ Extract and provide in JSON format:
 If any field is not mentioned, use reasonable defaults or 0.0 for numbers."""
             
             response = self.chat_model.generate_content(prompt)
-            
             import json
-            result = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
-            
-            return result
+            response_text = response.text.strip()
+            # Try direct JSON parsing
+            try:
+                result = json.loads(response_text.replace('```json', '').replace('```', ''))
+                # Normalize numeric fields
+                for num_field in ['earnings', 'fuel_cost', 'toll_cost', 'other_expenses']:
+                    if num_field in result:
+                        try:
+                            result[num_field] = float(result[num_field]) if result[num_field] is not None else 0.0
+                        except Exception:
+                            result[num_field] = 0.0
+                return result
+            except Exception:
+                # Attempt to find a JSON block inside the text
+                json_match = re.search(r"\{[\s\S]*\}", response_text)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(0))
+                        for num_field in ['earnings', 'fuel_cost', 'toll_cost', 'other_expenses']:
+                            if num_field in result:
+                                try:
+                                    result[num_field] = float(result[num_field]) if result[num_field] is not None else 0.0
+                                except Exception:
+                                    result[num_field] = 0.0
+                        return result
+                    except Exception:
+                        pass
+                # Fallback: log and return sensible default
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to parse JSON from Gemini extract_trip_info output: %s", response_text)
+                return {
+                    'start_location': None,
+                    'end_location': None,
+                    'earnings': 0.0,
+                    'fuel_cost': 0.0,
+                    'toll_cost': 0.0,
+                    'other_expenses': 0.0,
+                    'platform': None,
+                    'trip_type': 'ride_hailing',
+                    'notes': ''
+                }
         except Exception as e:
             raise Exception(f"Trip info extraction failed: {str(e)}")
     

@@ -5,6 +5,7 @@ from app.agents.nodes.earnings_advisor import EarningsAdvisor
 from app.agents.nodes.diagnostic_agent import DiagnosticAgent
 from app.agents.nodes.surplus_planner import SurplusPlanner
 from app.agents.nodes.investment_advisor import InvestmentAdvisor
+from app.agents.nodes.action_executor import ActionExecutor
 from app.agents.tools import DatabaseTool, MapsTool, FinancialTool, ChromaTool
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any
@@ -23,6 +24,7 @@ class SarathiAgent:
         
         # Initialize nodes
         self.evaluator = UserStateEvaluator(self.db_tool)
+        self.action_executor = ActionExecutor(self.db_tool)
         self.earnings_advisor = EarningsAdvisor(
             self.db_tool,
             self.maps_tool,
@@ -46,6 +48,7 @@ class SarathiAgent:
         
         # Add nodes
         workflow.add_node("evaluate", self.evaluator)
+        workflow.add_node("action_executor", self.action_executor)
         workflow.add_node("earnings_advisor", self.earnings_advisor)
         workflow.add_node("diagnostic_agent", self.diagnostic_agent)
         workflow.add_node("surplus_planner", self.surplus_planner)
@@ -60,6 +63,7 @@ class SarathiAgent:
             "evaluate",
             self._route_query,
             {
+                "action_executor": "action_executor",
                 "earnings_advisor": "earnings_advisor",
                 "diagnostic_agent": "diagnostic_agent",
                 "surplus_planner": "surplus_planner",
@@ -67,7 +71,8 @@ class SarathiAgent:
             }
         )
         
-        # Add edges from each advisor to END
+        # Add edges from each node to END
+        workflow.add_edge("action_executor", END)
         workflow.add_edge("earnings_advisor", END)
         workflow.add_edge("diagnostic_agent", END)
         workflow.add_edge("general_response", END)
